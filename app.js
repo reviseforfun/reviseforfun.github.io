@@ -1,12 +1,15 @@
 'use strict';
 
-// --- State Management & Persistence ---
+// --- Configuration ---
+const API_BASE_URL = 'https://cyber.reviseio.workers.dev';
+
 const STORAGE_KEYS = {
   SETS: 'CR_SETS',
   TASKS: 'CR_TASKS',
   SESSIONS: 'CR_SESSIONS'
 };
 
+// --- Application State ---
 const state = {
   user: null,
   localSets: [],
@@ -15,18 +18,12 @@ const state = {
   sessions: 0,
   chatMessages: [],
   activeSet: null,
-  studyMode: 'flashcards', // 'flashcards' | 'quiz'
+  studyMode: 'flashcards',
   currentCardIndex: 0,
-  isFlipped: false,
-  timer: {
-    intervalId: null,
-    timeLeft: 25 * 60,
-    duration: 25 * 60,
-    isRunning: false
-  }
+  isFlipped: false
 };
 
-// Helper: Local Storage Read/Write
+// --- Storage Helpers ---
 function readStorage(key, fallback) {
   try {
     const item = localStorage.getItem(key);
@@ -45,7 +42,7 @@ function saveStorage(key, value) {
   }
 }
 
-// Helper: HTML Escaping for XSS Prevention
+// --- Utilities ---
 function esc(str) {
   if (typeof str !== 'string') return '';
   return str
@@ -56,7 +53,6 @@ function esc(str) {
     .replace(/'/g, '&#039;');
 }
 
-// Helper: Toast Notifications
 function toast(message) {
   const container = document.getElementById('toast-container') || createToastContainer();
   const el = document.createElement('div');
@@ -73,16 +69,19 @@ function createToastContainer() {
   return container;
 }
 
-// --- API Network Wrapper ---
+// --- API Network Request Helper ---
 async function request(endpoint, options = {}) {
+  const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}${endpoint}`;
+
   const config = {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include', // Mandated for session management with Cloudflare Workers
     signal: AbortSignal.timeout(15000),
     ...options
   };
 
   try {
-    const res = await fetch(endpoint, config);
+    const res = await fetch(url, config);
     if (res.status === 401) {
       state.user = null;
       renderAccountBar();
@@ -99,22 +98,20 @@ async function request(endpoint, options = {}) {
   }
 }
 
-// --- Initialization ---
+// --- App Initialization ---
 async function initApp() {
-  // Load local persistence items
   state.localSets = readStorage(STORAGE_KEYS.SETS, []);
   state.tasks = readStorage(STORAGE_KEYS.TASKS, []);
   state.sessions = readStorage(STORAGE_KEYS.SESSIONS, 0);
 
-  // Authenticate session before initial rendering to prevent flash of guest state
+  // Authenticate session and load remote sets before initial render
   await checkAccountSession();
   await fetchRemoteSets();
 
-  // Setup routing & start periodic processes
   window.addEventListener('hashchange', handleRoute);
   handleRoute();
-  
-  // Start chat polling loop
+
+  // Poll chat every 5 seconds
   setInterval(refreshChat, 5000);
 }
 
@@ -136,7 +133,6 @@ async function fetchRemoteSets() {
   }
 }
 
-// Combined Sets List
 function getAllSets() {
   const builtInSamples = [
     {
@@ -152,22 +148,78 @@ function getAllSets() {
   return [...builtInSamples, ...state.localSets, ...state.remoteSets];
 }
 
-// --- Quiz Logic with Improved Normalization ---
-function normalizeAnswer(text) {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/[^\w\s]/gi, '') // Remove punctuation, retain single spaces
-    .replace(/\s+/g, ' ');    // Collapse multiple spaces into one
+// --- Authentication Handlers ---
+async function handleAuthSubmit(event, endpoint) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  const data = Object.fromEntries(formData.entries());
+
+  try {
+    const user = await request(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    state.user = user;
+    renderAccountBar();
+    handleRoute();
+    toast('Success!');
+  } catch (err) {
+    toast(err.message || 'Authentication failed.');
+  }
 }
 
-function checkAnswer(userAnswer, correctAnswer) {
-  const cleanUser = normalizeAnswer(userAnswer);
-  const cleanCorrect = normalizeAnswer(correctAnswer);
-  return cleanUser === cleanCorrect;
+async function signOut() {
+  try {
+    await request('/api/auth/logout', { method: 'POST' });
+  } catch (err) {
+    console.error('Logout error:', err);
+  }
+  state.user = null;
+  renderAccountBar();
+  handleRoute();
+  toast('Signed out.');
 }
 
-// --- Routing & UI Rendering ---
+// --- Chat Handlers ---
+async function sendChatMessage(event) {
+  event.preventDefault();
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+
+  const text = input.value.trim();
+  if (!text) return;
+
+  try {
+    await request('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ text })
+    });
+    input.value = '';
+    await refreshChat();
+  } catch (err) {
+    toast('Failed to send message.');
+  }
+}
+
+async function refreshChat() {
+  const chatBox = document.getElementById('chat-box');
+  if (!chatBox) return;
+
+  try {
+    const messages = await request('/api/chat');
+    state.chatMessages = messages;
+    chatBox.innerHTML = messages.map(msg => `
+      <div class="chat-msg">
+        <strong>${esc(msg.username)}:</strong> ${esc(msg.text)}
+      </div>
+    `).join('');
+    chatBox.scrollTop = chatBox.scrollHeight;
+  } catch {
+    // Silent failure for polling loop
+  }
+}
+
+// --- Router ---
 function handleRoute() {
   const routePath = window.location.hash.replace('#', '') || 'library';
   const mainContent = document.getElementById('app-main');
@@ -190,12 +242,7 @@ function handleRoute() {
       renderAccountPage(mainContent);
       break;
     default:
-      if (routePath.startsWith('study/')) {
-        const setId = routePath.split('/')[1];
-        renderStudyPage(mainContent, setId);
-      } else {
-        renderLibrary(mainContent);
-      }
+      renderLibrary(mainContent);
   }
 }
 
@@ -210,47 +257,31 @@ function renderAccountBar() {
   }
 }
 
-// --- UI Components ---
+// --- Views ---
 function renderLibrary(container) {
   const sets = getAllSets();
   container.innerHTML = `
     <section class="library-section">
       <h2>Study Library</h2>
-      <div class="library-controls">
-        <input type="text" id="search-input" placeholder="Search study sets..." oninput="filterLibrary()">
-      </div>
       <div id="set-grid" class="set-grid">
-        ${renderSetList(sets)}
+        ${sets.map(set => `
+          <div class="set-card">
+            <h3>${esc(set.title)}</h3>
+            <p>Subject: ${esc(set.subject || 'General')}</p>
+            <p>${set.cards ? set.cards.length : 0} cards</p>
+          </div>
+        `).join('')}
       </div>
     </section>
   `;
-}
-
-function renderSetList(sets) {
-  if (sets.length === 0) {
-    return '<p>No study sets found.</p>';
-  }
-  return sets.map(set => `
-    <div class="set-card">
-      <h3>${esc(set.title)}</h3>
-      <p>Subject: ${esc(set.subject || 'General')}</p>
-      <p>${set.cards ? set.cards.length : 0} cards</p>
-      <button onclick="window.location.hash='study/${esc(set.id)}'">Study Set</button>
-    </div>
-  `).join('');
 }
 
 function renderPlanner(container) {
   container.innerHTML = `
     <section class="planner-section">
       <h2>Revision Planner</h2>
-      <ul id="task-list">
-        ${state.tasks.map((task, idx) => `
-          <li>
-            <span>${esc(task.text)}</span>
-            <button onclick="removeTask(${idx})">Done</button>
-          </li>
-        `).join('')}
+      <ul>
+        ${state.tasks.map(task => `<li>${esc(task.text)}</li>`).join('')}
       </ul>
     </section>
   `;
@@ -260,9 +291,8 @@ function renderTimer(container) {
   container.innerHTML = `
     <section class="timer-section">
       <h2>Focus Timer</h2>
-      <div class="timer-display" id="time-display">25:00</div>
-      <button onclick="toggleTimer()">Start / Pause</button>
-      <p>Completed Focus Sessions: ${state.sessions}</p>
+      <div class="timer-display">25:00</div>
+      <p>Completed Sessions: ${state.sessions}</p>
     </section>
   `;
 }
@@ -273,33 +303,21 @@ function renderChat(container) {
       <h2>Community Chat</h2>
       <div id="chat-box" class="chat-box"></div>
       ${state.user 
-        ? `<form onsubmit="sendChatMessage(event)">
+        ? `<form id="chat-form">
              <input type="text" id="chat-input" placeholder="Say something..." required>
              <button type="submit">Send</button>
            </form>`
-        : '<p>Please <a href="#account">sign in</a> to participate in chat.</p>'
+        : '<p>Please <a href="#account">sign in</a> to chat.</p>'
       }
     </section>
   `;
-  refreshChat();
-}
 
-async function refreshChat() {
-  const chatBox = document.getElementById('chat-box');
-  if (!chatBox) return;
-
-  try {
-    const messages = await request('/api/chat');
-    state.chatMessages = messages;
-    chatBox.innerHTML = messages.map(msg => `
-      <div class="chat-msg">
-        <strong>${esc(msg.username)}:</strong> ${esc(msg.text)}
-      </div>
-    `).join('');
-    chatBox.scrollTop = chatBox.scrollHeight;
-  } catch {
-    // Silent fail for polling errors
+  const chatForm = document.getElementById('chat-form');
+  if (chatForm) {
+    chatForm.addEventListener('submit', sendChatMessage);
   }
+
+  refreshChat();
 }
 
 function renderAccountPage(container) {
@@ -308,23 +326,28 @@ function renderAccountPage(container) {
       <section class="account-section">
         <h2>Account Profile</h2>
         <p>Signed in as <strong>${esc(state.user.username)}</strong></p>
-        <button onclick="signOut()">Sign Out</button>
+        <button id="signout-btn">Sign Out</button>
       </section>
     `;
+    document.getElementById('signout-btn').addEventListener('click', signOut);
     return;
   }
 
   container.innerHTML = `
     <section class="account-section">
-      <h2>Account Sign In</h2>
-      <form onsubmit="handleAuthSubmit(event, '/api/auth/login')">
+      <h2>Sign In</h2>
+      <form id="login-form">
         <input type="text" name="username" placeholder="Username" required>
         <input type="password" name="password" placeholder="Password" required>
         <button type="submit">Sign In</button>
       </form>
     </section>
   `;
+
+  document.getElementById('login-form').addEventListener('submit', (e) => {
+    handleAuthSubmit(e, '/api/auth/login');
+  });
 }
 
-// --- App Startup ---
+// Boot application when DOM is ready
 document.addEventListener('DOMContentLoaded', initApp);
