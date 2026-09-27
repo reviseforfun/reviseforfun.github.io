@@ -129,22 +129,18 @@ async function request(path, init = {}) {
   
   const r = await fetch(API + path, options);
   
-  if (!r.ok) { 
-    let message = 'Request failed. Please try again.';
-    try { 
-      const errBody = await r.json();
-      message = errBody.error || message; 
-    } catch {} 
-    
+  const data = await r.json().catch(() => ({}));
+
+  if (!r.ok) {
     if (r.status === 401) {
       user = null;
       updateAccount();
-    } 
-    throw new Error(message); 
-  } 
-  return r;
-}
+    }
+    throw new Error(data.error || 'Request failed. Please try again.');
+  }
 
+  return data;
+}
 const heading = (title,sub,action='') => `<div class="page-heading"><div><p class="eyebrow">YOUR SPACE TO GROW</p><h1>${title}</h1><p class="subtitle">${sub}</p></div>${action}</div>`;
 
 function renderLibrary() {
