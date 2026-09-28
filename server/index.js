@@ -1,5 +1,6 @@
 import { pbkdf2, timingSafeEqual, randomBytes, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
+import schema from './schema.js';
 
 const derive = promisify(pbkdf2);
 const SESSION_SECONDS = 60 * 60 * 24 * 7;
@@ -208,11 +209,19 @@ async function api(request, env, url) {
   throw new HttpError(404, 'Endpoint not found.');
 }
 
+// Create any missing tables once per isolate, so a fresh or partly set-up D1 database just works.
+let schemaReady;
+function ensureSchema(env) {
+  schemaReady ??= env.DB.batch(schema.split(';').map(s => s.trim()).filter(Boolean).map(s => env.DB.prepare(s))).catch(error => { schemaReady = undefined; throw error; });
+  return schemaReady;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const isApi = url.pathname.startsWith('/api/');
     try {
+      if (isApi) await ensureSchema(env);
       const response = isApi ? await api(request, env, url) : await env.ASSETS.fetch(request);
       return secure(response, isApi);
     } catch (error) {
@@ -221,6 +230,7 @@ export default {
     }
   },
   async scheduled(_event, env) {
+    await ensureSchema(env);
     await env.DB.batch([
       env.DB.prepare('DELETE FROM sessions WHERE expires <= ?').bind(Date.now()),
       env.DB.prepare('DELETE FROM rate_limits WHERE expires <= ?').bind(Date.now()),
