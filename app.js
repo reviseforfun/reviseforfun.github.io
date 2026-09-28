@@ -45,7 +45,7 @@ function renderLibrary() {
  <section class="hero"><div><p class="eyebrow">MAKE TODAY A LEARNING DAY</p><h2>Big ideas start<br>with small study sessions.</h2><p>Turn “I don’t get it” into “I’ve got this”. One card at a time.</p><a class="button primary" href="#timer">Start a focus session <span>↗</span></a></div><div class="hero-art" aria-hidden="true"><div class="paper back"></div><div class="paper front">A LITTLE EVERY DAY<strong>Learn.<br>Recall.<br>Repeat.</strong><hr><hr></div><span class="art-star">✳</span><span class="art-spark">✧</span></div></section>
  <div class="stats"><div class="stat"><span class="stat-icon">▦</span><div><strong>${allSets().length}</strong><small>Sets to explore</small></div></div><div class="stat"><span class="stat-icon green">✓</span><div><strong>${tasks.filter(t=>t.done).length}</strong><small>Tasks completed</small></div></div><div class="stat"><span class="stat-icon orange">◷</span><div><strong>${sessions}</strong><small>Focus sessions</small></div></div></div>
  <section><div class="section-heading"><div><h2>Your study library <span class="count" id="set-count"></span></h2><p>A home for everything you’re learning.</p></div></div><div id="connection-status"></div><div class="filters"><label class="search"><span aria-hidden="true">⌕</span><span class="sr-only">Search study sets</span><input id="search" placeholder="Search sets, subjects, or creators…" value="${esc(search)}"></label><label class="sr-only" for="subject">Filter by subject</label><select id="subject"><option value="ALL">All subjects</option>${options()}</select></div><div class="sets-grid" id="sets"></div></section>
- <div class="section-heading tools-heading"><h2>A little help along the way</h2></div><div class="quick-tools"><a class="tool-link" href="#timer"><span class="stat-icon orange">◷</span><div><strong>Make time for focus</strong><p>25 minutes. One thing at a time.</p></div><span>↗</span></a><a class="tool-link" href="#planner"><span class="stat-icon green">▤</span><div><strong>Give your week a plan</strong><p>Less overwhelm. More little wins.</p></div><span>↗</span></a></div>`;
+ <div class="section-heading tools-heading"><h2>A little help along the way</h2></div><div class="quick-tools"><a class="tool-link" href="#timer"><span class="stat-icon orange">◷</span><div><strong>Make time for focus</strong><p>25 minutes. One thing at a time.</p></div><span>↗</span></a><a class="tool-link" href="#games"><span class="stat-icon">▣</span><div><strong>Play a revision game</strong><p>Memory match and quick-fire, from any set.</p></div><span>↗</span></a><a class="tool-link" href="#planner"><span class="stat-icon green">▤</span><div><strong>Give your week a plan</strong><p>Less overwhelm. More little wins.</p></div><span>↗</span></a></div>`;
  $('#subject').value=subject;
  $('#search').oninput=e=>{search=e.target.value; renderSetList();};
  $('#subject').onchange=e=>{subject=e.target.value;renderSetList();}; renderSetList(); connectionStatus();
@@ -92,5 +92,62 @@ setInterval(updateTimer,250);
 function chat(){ $('#content').innerHTML=heading('Better, together.','Share a question, a helpful tip, or a little encouragement.')+`<section class="panel"><h2>Community chat</h2><p class="help">You’re chatting as ${esc(user?.username || "Guest")}. Messages are public.</p><p id="chat-status" class="help" role="status"></p><div class="chat-box" id="chat-box" aria-label="Community messages"></div><form class="chat-form" id="chat-form"><label class="sr-only" for="chat-input">Your message</label><input id="chat-input" maxlength="2000" placeholder="What are you working on?" required><button class="button primary" id="send">Send →</button></form></section>`; const version=viewVersion;refreshChat(version);chatPoll=setInterval(()=>refreshChat(version),5000);$('#chat-form').onsubmit=async e=>{e.preventDefault();if(!user)return toast('Sign in to send a message.');const input=$('#chat-input'),button=$('#send'),text=input.value.trim();if(!text)return;button.disabled=true;try{await request('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});if(input.value.trim()===text)input.value='';if(page==='chat'&&version===viewVersion)refreshChat(version);}catch(error){toast(error.message);}finally{button.disabled=false;}};}
 let chatLoading=false;
 async function refreshChat(version){if(chatLoading)return;chatLoading=true;try{const msgs=await (await request('/api/chat')).json();if(!Array.isArray(msgs))throw Error();if(page!=='chat'||version!==viewVersion)return;const box=$('#chat-box'),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<60;box.innerHTML=msgs.map(m=>`<article class="chat-msg"><header><strong>${esc(m.author)}</strong><time>${esc(new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></header><p>${esc(m.text)}</p></article>`).join('')||'<p class="empty">Start the conversation. What are you learning today?</p>';if(atBottom)box.scrollTop=box.scrollHeight;$('#chat-status').textContent='Updates every few seconds.';}catch{if(page==='chat'&&version===viewVersion)$('#chat-status').textContent='Chat is unavailable. We’ll retry shortly; your draft stays here.';}finally{chatLoading=false;}}
-function route(){clearInterval(chatPoll);viewVersion++;const route=location.hash.slice(1)||'sets';page=['sets','create','planner','timer','chat','account'].includes(route)?route:'sets';const titles={sets:'Study library',create:'Create a set',planner:'Revision planner',timer:'Focus timer',chat:'Community chat',account:'Account'};$('#page-title').textContent=titles[page];document.querySelectorAll('nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===page);if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});({sets:renderLibrary,create:createSet,planner,timer:timerPage,chat,account:accountPage})[page]();}
+let game, gameTimer;
+let best = read('CR_BEST',{}); if (!best || typeof best !== 'object') best = {};
+const shuffle = a => { for (let i=a.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; };
+const bestKey = (kind,set) => kind+':'+set.id;
+function arcade(){
+ const sets=allSets().filter(s=>s.cards.length>=2);
+ if(!sets.some(s=>s.id===arcade.setId)) arcade.setId=sets[0]?.id;
+ $('#content').innerHTML=heading('Play your way to remembering.','Turn any study set into a game. Pick a set, then pick a game.')+`<section class="panel"><div class="field"><label for="game-set">Study set</label><select id="game-set">${sets.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${s.cards.length} cards)</option>`).join('')}</select></div><div class="quick-tools"><button class="tool-link game-pick" id="play-memory" type="button"><span class="stat-icon">▣</span><div><strong>Memory match</strong><p>Flip tiles and pair each question with its answer.</p><small id="best-memory"></small></div><span>↗</span></button><button class="tool-link game-pick" id="play-quick" type="button"><span class="stat-icon orange">ϟ</span><div><strong>Quick-fire</strong><p>60 seconds. Pick the right answer, as many times as you can.</p><small id="best-quick"></small></div><span>↗</span></button></div></section>`;
+ const selected=()=>sets.find(s=>s.id===$('#game-set').value);
+ const showBest=()=>{const s=selected(),m=best[bestKey('memory',s)],q=best[bestKey('quick',s)];$('#best-memory').textContent=m?`Best: ${m} moves`:'No best yet';$('#best-quick').textContent=q?`Best: ${q} correct`:'No best yet';};
+ $('#game-set').value=arcade.setId;$('#game-set').onchange=e=>{arcade.setId=e.target.value;showBest();};showBest();
+ $('#play-memory').onclick=()=>startMemory(selected());$('#play-quick').onclick=()=>startQuick(selected());
+}
+function saveBest(kind,set,value,lowerIsBetter){const key=bestKey(kind,set),old=best[key];const beat=!old||(lowerIsBetter?value<old:value>old);if(beat){best={...best,[key]:value};save('CR_BEST',best);}return beat;}
+function gameShell(title,sub,body){return `<div class="study"><div class="section-heading"><button class="button" id="game-back">← Arcade</button><span class="help" id="game-stats"></span></div><p class="eyebrow">${title}</p><h1>${esc(game.set.name)}</h1><p class="subtitle">${sub}</p>${body}</div>`;}
+function gameOver(kind,headline,detail,isBest){clearInterval(gameTimer);$('#content').innerHTML=`<div class="study panel"><p class="eyebrow">${isBest?'NEW PERSONAL BEST ✳':'NICE ONE'}</p><h1>${headline}</h1><p class="subtitle">${detail}</p><div class="actions"><button class="button primary" id="again">Play again</button><button class="button" id="game-back">Back to arcade</button></div></div>`;$('#again').onclick=()=>(kind==='memory'?startMemory:startQuick)(game.set);$('#game-back').onclick=arcade;}
+function startMemory(set){
+ clearInterval(gameTimer);
+ const pairs=shuffle([...set.cards]).slice(0,6);
+ game={kind:'memory',set,tiles:shuffle(pairs.flatMap((c,i)=>[{pair:i,side:'Q',text:c.front},{pair:i,side:'A',text:c.back}])),open:[],matched:0,moves:0,start:Date.now(),lock:false};
+ $('#content').innerHTML=gameShell('MEMORY MATCH','Find each question and its answer.',`<div class="memory-grid" id="memory-grid">${game.tiles.map((t,i)=>`<button class="mem-tile" data-tile="${i}" aria-label="Hidden tile ${i+1}"><span>?</span></button>`).join('')}</div>`);
+ $('#game-back').onclick=arcade;
+ const stats=()=>{$('#game-stats').textContent=`${game.moves} moves · ${game.matched}/${pairs.length} pairs · ${Math.floor((Date.now()-game.start)/1000)}s`;};stats();gameTimer=setInterval(stats,1000);
+ document.querySelectorAll('[data-tile]').forEach(b=>b.onclick=()=>{
+  const i=Number(b.dataset.tile),t=game.tiles[i];if(game.lock||t.done||game.open.includes(i))return;
+  b.classList.add('flipped');b.innerHTML=`<small>${t.side==='Q'?'QUESTION':'ANSWER'}</small><span>${esc(t.text)}</span>`;b.setAttribute('aria-label',`${t.side==='Q'?'Question':'Answer'}: ${t.text}`);game.open.push(i);
+  if(game.open.length<2)return;
+  game.moves++;const [a,c]=game.open.map(n=>game.tiles[n]);
+  if(a.pair===c.pair){game.open.forEach(n=>{game.tiles[n].done=true;document.querySelector(`[data-tile="${n}"]`).classList.add('matched');});game.open=[];game.matched++;stats();
+   if(game.matched===pairs.length){const secs=Math.round((Date.now()-game.start)/1000),isBest=saveBest('memory',set,game.moves,true);setTimeout(()=>gameOver('memory','All matched! ✨',`${game.moves} moves in ${secs} second${secs===1?'':'s'}. Best: ${best[bestKey('memory',set)]} moves.`,isBest),500);}
+  }else{game.lock=true;stats();setTimeout(()=>{game.open.forEach(n=>{const el=document.querySelector(`[data-tile="${n}"]`);if(el){el.classList.remove('flipped');el.innerHTML='<span>?</span>';el.setAttribute('aria-label',`Hidden tile ${n+1}`);}});game.open=[];game.lock=false;},900);}
+ });
+}
+function startQuick(set){
+ clearInterval(gameTimer);
+ const answers=[...new Set([...set.cards,...allSets().flatMap(s=>s.cards)].map(c=>c.back))];
+ game={kind:'quick',set,deck:[],score:0,asked:0,streak:0,end:Date.now()+60000,lock:false};
+ $('#content').innerHTML=gameShell('QUICK-FIRE','Tap the right answer, or press 1–4.',`<progress class="progress" id="quick-time" max="60" value="60" aria-label="Time left"></progress><div class="flashcard quick-question" id="quick-q"></div><div class="quick-options" id="quick-options"></div>`);
+ $('#game-back').onclick=arcade;
+ const finish=()=>{const isBest=saveBest('quick',set,game.score,false);gameOver('quick',`${game.score} correct`,`You answered ${game.asked} questions. Best: ${best[bestKey('quick',set)]} correct.`,isBest);};
+ const tick=()=>{const left=Math.max(0,(game.end-Date.now())/1000);if(!$('#quick-time'))return clearInterval(gameTimer);$('#quick-time').value=left;$('#game-stats').textContent=`${Math.ceil(left)}s · ${game.score} correct · streak ${game.streak}`;if(!left&&!game.lock)finish();};
+ const next=()=>{
+  if(!game.deck.length)game.deck=shuffle([...set.cards]);
+  const card=game.deck.pop();game.card=card;game.lock=false;
+  const options=shuffle([card.back,...shuffle(answers.filter(a=>a!==card.back)).slice(0,3)]);
+  $('#quick-q').innerHTML=`<small>QUESTION</small><strong>${esc(card.front)}</strong>`;
+  $('#quick-options').innerHTML=options.map((o,i)=>`<button class="button quick-option" data-option="${i}"><b>${i+1}</b><span>${esc(o)}</span></button>`).join('');
+  document.querySelectorAll('[data-option]').forEach(b=>b.onclick=()=>{
+   if(game.lock)return;game.lock=true;game.asked++;const right=options[b.dataset.option]===card.back;
+   if(right){game.score++;game.streak++;}else game.streak=0;
+   document.querySelectorAll('[data-option]').forEach(o=>{if(options[o.dataset.option]===card.back)o.classList.add('correct');});if(!right)b.classList.add('wrong');
+   tick();setTimeout(()=>{if(game.kind!=='quick'||game.card!==card)return;if(Date.now()>=game.end)finish();else next();},right?350:1100);
+  });
+ };
+ next();tick();gameTimer=setInterval(tick,200);
+}
+document.addEventListener('keydown',e=>{if(page!=='games'||game?.kind!=='quick'||e.target.closest?.('input,select,textarea'))return;const b=document.querySelector(`[data-option="${Number(e.key)-1}"]`);if(b){e.preventDefault();b.click();}});
+function route(){clearInterval(chatPoll);clearInterval(gameTimer);game=null;viewVersion++;const route=location.hash.slice(1)||'sets';page=['sets','create','games','planner','timer','chat','account'].includes(route)?route:'sets';const titles={sets:'Study library',create:'Create a set',games:'Arcade',planner:'Revision planner',timer:'Focus timer',chat:'Community chat',account:'Account'};$('#page-title').textContent=titles[page];document.querySelectorAll('nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===page);if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});({sets:renderLibrary,create:createSet,games:arcade,planner,timer:timerPage,chat,account:accountPage})[page]();}
 window.addEventListener('hashchange',route);route();loadSets();loadAccount();

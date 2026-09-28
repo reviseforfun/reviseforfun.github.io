@@ -25,7 +25,18 @@ npm run db:migrate  # Apply local D1 migrations
 
 Build output is `dist/public` and `dist/worker`. Only index.html, styles.css and app.js are copied to public assets. CI installs dependencies, checks syntax, builds, and tests every push and pull request.
 
-## Deploy to Cloudflare
+## Deploy from the browser (Chromebook friendly)
+
+Pushing to `main` runs `.github/workflows/deploy.yml`: it tests the code, applies D1 migrations to the live database and deploys the Worker. You never need a terminal. One-time setup:
+
+1. In the Cloudflare dashboard, go to **My Profile → API Tokens → Create Token**, use the **Edit Cloudflare Workers** template and add **Account → D1 → Edit**. Copy the token.
+2. Copy your **Account ID** from the Workers & Pages overview page.
+3. In GitHub, go to **Settings → Secrets and variables → Actions** and add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+4. Open the **Actions** tab, pick **Deploy to Cloudflare**, and press **Run workflow**.
+
+The live site is the Worker URL, not github.io: GitHub Pages can only serve static files, so sign-in, publishing and chat only work on the Worker.
+
+## Deploy to Cloudflare from a terminal
 
 This has not been deployed. Use a **new** D1 database; the earlier API schema and account ownership are unknown. Existing browser-only guest identities are not migrated to trusted accounts.
 
