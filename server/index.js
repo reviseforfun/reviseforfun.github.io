@@ -3,6 +3,8 @@ import { promisify } from 'node:util';
 import schema from './schema.js';
 
 const derive = promisify(pbkdf2);
+// Cloudflare's runtime rejects PBKDF2 above 100,000 iterations (local workerd does not).
+const PBKDF2_ITERATIONS = 100000;
 const SESSION_SECONDS = 60 * 60 * 24 * 7;
 const COOKIE = '__Host-cr_session';
 const SUBJECTS = new Set(['Maths', 'Science', 'Computer Science', 'English', 'History', 'Languages', 'Other']);
@@ -142,7 +144,7 @@ async function api(request, env, url) {
 
     if (path.endsWith('register')) {
       const salt = randomBytes(16).toString('hex');
-      const passwordHash = (await derive(data.password, salt, 600000, 32, 'sha256')).toString('hex');
+      const passwordHash = (await derive(data.password, salt, PBKDF2_ITERATIONS, 32, 'sha256')).toString('hex');
       const user = { id: crypto.randomUUID(), username };
       const result = await env.DB.prepare('INSERT INTO users (id, username, password_hash, salt, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(username) DO NOTHING').bind(user.id, username, passwordHash, salt, Date.now()).run();
       if (!result.meta.changes) throw new HttpError(409, 'That username is unavailable.');
@@ -150,7 +152,7 @@ async function api(request, env, url) {
     }
 
     const user = await env.DB.prepare('SELECT id, username, password_hash, salt FROM users WHERE username = ?').bind(username).first();
-    const candidate = await derive(data.password, user?.salt || '00000000000000000000000000000000', 600000, 32, 'sha256');
+    const candidate = await derive(data.password, user?.salt || '00000000000000000000000000000000', PBKDF2_ITERATIONS, 32, 'sha256');
     if (!timingSafeEqual(candidate, Buffer.from(user?.password_hash || '0'.repeat(64), 'hex')) || !user) {
       throw new HttpError(401, 'Incorrect username or password.');
     }

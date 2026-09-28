@@ -18,3 +18,10 @@ test('server schema matches the migration file',async()=>{
  const { default: schema }=await import('../server/schema.js');
  assert.equal(schema.trim(),(await readFile('migrations/0001_initial.sql','utf8')).trim());
 });
+test('password hashing stays within the Workers PBKDF2 limit',async()=>{
+ const { readFile }=await import('node:fs/promises');
+ const source=await readFile('server/index.js','utf8');
+ const n=Number(source.match(/PBKDF2_ITERATIONS = (\d+)/)[1]);
+ assert.ok(n<=100000,'Cloudflare rejects more than 100,000 iterations in production');
+ assert.equal(source.match(/derive\(/g).length,source.match(/PBKDF2_ITERATIONS, 32/g).length,'every derive() call uses the constant');
+});
