@@ -41,7 +41,7 @@ This has not been deployed. Use a **new** D1 database; the earlier API schema an
 4. Run `npm run db:migrate:remote` to initialise that database.
 5. Run `npm run deploy` to publish frontend and backend together.
 
-The default Worker name is `cyberrevision`; change it or configure a custom domain before deploying if desired. No API keys or passwords belong in source control. The app does not require an application secret: passwords are salted and derived using PBKDF2-HMAC-SHA256 (600,000 iterations), and random opaque sessions are stored only as SHA-256 hashes in D1. Password derivation consumes CPU; choose an appropriate Workers CPU budget and load-test before a broad rollout.
+The default Worker name is `cyberrevision`; change it or configure a custom domain before deploying if desired. No API keys or passwords belong in source control. The app does not require an application secret: passwords are salted and derived using PBKDF2-HMAC-SHA256 (100,000 iterations, the maximum Cloudflare Workers allows), and random opaque sessions are stored only as SHA-256 hashes in D1. Password derivation consumes CPU; choose an appropriate Workers CPU budget and load-test before a broad rollout.
 
 ## Security model
 
