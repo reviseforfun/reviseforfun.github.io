@@ -1,353 +1,153 @@
 'use strict';
-
-// --- Configuration ---
-const API_BASE_URL = 'https://cyber.reviseio.workers.dev';
-
-const STORAGE_KEYS = {
-  SETS: 'CR_SETS',
-  TASKS: 'CR_TASKS',
-  SESSIONS: 'CR_SESSIONS'
-};
-
-// --- Application State ---
-const state = {
-  user: null,
-  localSets: [],
-  remoteSets: [],
-  tasks: [],
-  sessions: 0,
-  chatMessages: [],
-  activeSet: null,
-  studyMode: 'flashcards',
-  currentCardIndex: 0,
-  isFlipped: false
-};
-
-// --- Storage Helpers ---
-function readStorage(key, fallback) {
-  try {
-    const item = localStorage.getItem(key);
-    return item ? JSON.parse(item) : fallback;
-  } catch (err) {
-    toast('Unable to access local storage.');
-    return fallback;
-  }
+const API = '';
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function read(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
+function save(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { toast('Storage is full or unavailable. Your changes cannot be saved.'); return false; } }
+function toast(message) { $('#toast').textContent = message; clearTimeout(toast.timeout); toast.timeout = setTimeout(() => $('#toast').textContent = '', 4500); }
+let user = null;
+function updateAccount() {
+ $('#username').textContent = user?.username || 'Your workspace';
+ $('#account-link').textContent = user ? 'Account' : 'Sign in';
 }
-
-function saveStorage(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (err) {
-    toast('Failed to save data locally.');
-  }
+async function loadAccount() { try { user = (await (await request('/api/auth/me')).json()).user; updateAccount(); if(page==='sets')renderSetList();if(page==='account')accountPage(); } catch { toast('Sign-in service is unavailable. Local tools still work.'); } }
+function accountPage() {
+ $('#content').innerHTML = heading(user ? 'Your account.' : 'Welcome to your study space.', 'Sign in to publish sets and join the community.') + (user ? `<section class="panel"><h2>Signed in as ${esc(user?.username || "Guest")}</h2><div class="actions"><button class="button" id="logout">Sign out</button></div></section>` : `<section class="panel"><form id="auth-form"><div class="field"><label for="auth-username">Username</label><input id="auth-username" required minlength="3" maxlength="24" pattern="[a-zA-Z0-9_]+" autocomplete="username" placeholder="Letters, numbers and underscores"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" type="password" required minlength="12" maxlength="128" autocomplete="current-password" placeholder="At least 12 characters"></div><p class="help">Choose a unique password and keep it safe. Password recovery is not available yet.</p><p id="auth-error" role="alert" class="help"></p><div class="actions"><button class="button primary" name="action" value="login">Sign in</button><button class="button" name="action" value="register">Create account</button></div></form></section>`);
+ if (user) { $('#logout').onclick = async () => { try { await request('/api/auth/logout', {method:'POST'}); user=null;updateAccount();accountPage();toast('Signed out.'); } catch(error) { toast(error.message); } }; return; }
+ $('#auth-form').onsubmit = async e => {
+  e.preventDefault(); const form=e.currentTarget, action=e.submitter?.value || 'login';if($('#auth-error'))$('#auth-error').textContent='';
+  const buttons=[...form.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+  try { const response=await request('/api/auth/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#auth-username').value.trim(),password:$('#auth-password').value})});user=(await response.json()).user;updateAccount();location.hash='sets';toast('You’re signed in.'); }
+  catch(error) { if($('#auth-error')) $('#auth-error').textContent=error.message; }
+  finally { buttons.forEach(b=>b.disabled=false); }
+ };
 }
-
-// --- Utilities ---
-function esc(str) {
-  if (typeof str !== 'string') return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+const subjects = ['Maths','Science','Computer Science','English','History','Languages','Other'];
+const options = () => subjects.map(s => `<option>${s}</option>`).join('');
+const samples = [
+ {id:'sample-biology',name:'The building blocks of life',subject:'Science',cards:[{front:'What is the function of mitochondria?',back:'The site of aerobic respiration, releasing energy for the cell.'},{front:'What does the nucleus contain?',back:'Genetic material (DNA).'},{front:'What is diffusion?',back:'The net movement of particles from a higher concentration to a lower concentration.'}]},
+ {id:'sample-maths',name:'Algebra, one step at a time',subject:'Maths',cards:[{front:'Solve: 3x + 6 = 21',back:'x = 5'},{front:'Expand: 2(x + 4)',back:'2x + 8'},{front:'Factorise: x² + 5x + 6',back:'(x + 2)(x + 3)'}]},
+ {id:'sample-cs',name:'Inside the computer',subject:'Computer Science',cards:[{front:'What does CPU stand for?',back:'Central processing unit'},{front:'What is an algorithm?',back:'A sequence of steps used to solve a problem.'},{front:'What is a Boolean value?',back:'A value that is either true or false.'}]}
+].map(s => ({...s,author:'CyberRevision',sample:true}));
+const validSet = s => s && typeof s.id === 'string' && typeof s.name === 'string' && typeof s.subject === 'string' && Array.isArray(s.cards) && s.cards.length && s.cards.every(c => typeof c.front === 'string' && typeof c.back === 'string');
+let localSets = read('CR_SETS',[]); if (!Array.isArray(localSets)) localSets=[]; localSets=localSets.filter(validSet);
+let remoteSets = [], page = '', viewVersion = 0, chatPoll, search = '', subject = 'ALL', offline = false;
+let tasks = read('CR_TASKS',[]); if (!Array.isArray(tasks)) tasks=[]; tasks=tasks.filter(t=>t && typeof t.title==='string');
+let sessions = Number(read('CR_SESSIONS',0)) || 0;
+const allSets = () => [...localSets,...remoteSets.filter(s=>!localSets.some(l=>l.id===s.id)),...samples];
+async function request(path, init) {
+ const r = await fetch(API+path,{...init,credentials:'same-origin',signal:AbortSignal.timeout(15000)});
+ if(!r.ok) { let message='Request failed. Please try again.';try { message=(await r.json()).error||message; } catch {} if(r.status===401){user=null;updateAccount();} throw new Error(message); } return r;
 }
-
-function toast(message) {
-  const container = document.getElementById('toast-container') || createToastContainer();
-  const el = document.createElement('div');
-  el.className = 'toast-message';
-  el.textContent = message;
-  container.appendChild(el);
-  setTimeout(() => el.remove(), 4000);
+const heading = (title,sub,action='') => `<div class="page-heading"><div><p class="eyebrow">YOUR SPACE TO GROW</p><h1>${title}</h1><p class="subtitle">${sub}</p></div>${action}</div>`;
+function renderLibrary() {
+ $('#content').innerHTML = heading('A little revision. A lot of possibility.','Pick up where you left off, or learn something new.','<a class="button primary" href="#create">＋ Create a set</a>') + `
+ <section class="hero"><div><p class="eyebrow">MAKE TODAY A LEARNING DAY</p><h2>Big ideas start<br>with small study sessions.</h2><p>Turn “I don’t get it” into “I’ve got this”. One card at a time.</p><a class="button primary" href="#timer">Start a focus session <span>↗</span></a></div><div class="hero-art" aria-hidden="true"><div class="paper back"></div><div class="paper front">A LITTLE EVERY DAY<strong>Learn.<br>Recall.<br>Repeat.</strong><hr><hr></div><span class="art-star">✳</span><span class="art-spark">✧</span></div></section>
+ <div class="stats"><div class="stat"><span class="stat-icon">▦</span><div><strong>${allSets().length}</strong><small>Sets to explore</small></div></div><div class="stat"><span class="stat-icon green">✓</span><div><strong>${tasks.filter(t=>t.done).length}</strong><small>Tasks completed</small></div></div><div class="stat"><span class="stat-icon orange">◷</span><div><strong>${sessions}</strong><small>Focus sessions</small></div></div></div>
+ <section><div class="section-heading"><div><h2>Your study library <span class="count" id="set-count"></span></h2><p>A home for everything you’re learning.</p></div></div><div id="connection-status"></div><div class="filters"><label class="search"><span aria-hidden="true">⌕</span><span class="sr-only">Search study sets</span><input id="search" placeholder="Search sets, subjects, or creators…" value="${esc(search)}"></label><label class="sr-only" for="subject">Filter by subject</label><select id="subject"><option value="ALL">All subjects</option>${options()}</select></div><div class="sets-grid" id="sets"></div></section>
+ <div class="section-heading tools-heading"><h2>A little help along the way</h2></div><div class="quick-tools"><a class="tool-link" href="#timer"><span class="stat-icon orange">◷</span><div><strong>Make time for focus</strong><p>25 minutes. One thing at a time.</p></div><span>↗</span></a><a class="tool-link" href="#games"><span class="stat-icon">▣</span><div><strong>Play a revision game</strong><p>Memory match and quick-fire, from any set.</p></div><span>↗</span></a><a class="tool-link" href="#planner"><span class="stat-icon green">▤</span><div><strong>Give your week a plan</strong><p>Less overwhelm. More little wins.</p></div><span>↗</span></a></div>`;
+ $('#subject').value=subject;
+ $('#search').oninput=e=>{search=e.target.value; renderSetList();};
+ $('#subject').onchange=e=>{subject=e.target.value;renderSetList();}; renderSetList(); connectionStatus();
 }
-
-function createToastContainer() {
-  const container = document.createElement('div');
-  container.id = 'toast-container';
-  document.body.appendChild(container);
-  return container;
+function connectionStatus(){if($('#connection-status')) $('#connection-status').innerHTML=offline?'<p class="notice">The community library is unavailable. Your local sets and starter sets still work. <button id="retry">Try again</button></p>':''; if($('#retry')) $('#retry').onclick=loadSets;}
+function renderSetList(){
+ const sets=allSets().filter(s=>(subject==='ALL'||s.subject===subject)&&`${s.name} ${s.subject} ${s.author}`.toLowerCase().includes(search.toLowerCase()));
+ $('#set-count').textContent=sets.length;
+ $('#sets').innerHTML=sets.length?sets.map(s=>{const index=allSets().indexOf(s); const color=s.subject==='Science'?'green':s.subject==='Maths'?'orange':s.subject==='Computer Science'?'blue':'';return `<article class="set-card"><div class="set-top"><span class="set-icon ${color}">${s.subject==='Maths'?'ƒ':s.subject==='Science'?'⚗':'▧'}</span><span class="badge">${esc(s.subject)}</span></div><h3>${esc(s.name)}</h3><p class="meta">${s.cards.length} cards · ${esc(s.author||'Community')}</p><div class="set-bottom"><button class="button soft" data-study="${index}">Study set →</button><button class="button" data-quiz="${index}">Quiz</button>${s.ownerId && s.ownerId===user?.id?`<button class="icon-button" data-cloud-delete="${index}" aria-label="Delete published set ${esc(s.name)}">×</button>`:localSets.some(l=>l.id===s.id)?`<button class="icon-button" data-delete="${index}" aria-label="Delete ${esc(s.name)}">×</button>`:''}</div><div class="set-footer"><span>${s.sample?'Starter set':localSets.some(l=>l.id===s.id)?'Saved on this device':'Community set'}</span><span>✧</span></div></article>`;}).join(''):'<div class="empty">No sets match your search. Try another subject or create your own.</div>';
+ document.querySelectorAll('[data-study]').forEach(b=>b.onclick=()=>startStudy(allSets()[b.dataset.study],false));
+ document.querySelectorAll('[data-quiz]').forEach(b=>b.onclick=()=>startStudy(allSets()[b.dataset.quiz],true));
+ document.querySelectorAll('[data-cloud-delete]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this published set?'))return;const id=allSets()[b.dataset.cloudDelete].id;try{await request('/api/sets/'+encodeURIComponent(id),{method:'DELETE'});remoteSets=remoteSets.filter(s=>s.id!==id);localSets=localSets.filter(s=>s.id!==id);save('CR_SETS',localSets);renderLibrary();toast('Published set deleted.');}catch(error){toast(error.message);}});
+ document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>{if(confirm('Delete this local set?')){const next=localSets.filter(s=>s.id!==allSets()[b.dataset.delete].id);if(save('CR_SETS',next)){localSets=next;renderLibrary();}}});
 }
-
-// --- API Network Request Helper ---
-async function request(endpoint, options = {}) {
-  const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}${endpoint}`;
-
-  const config = {
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include', // Mandated for session management with Cloudflare Workers
-    signal: AbortSignal.timeout(15000),
-    ...options
-  };
-
-  try {
-    const res = await fetch(url, config);
-    if (res.status === 401) {
-      state.user = null;
-      renderAccountBar();
-      throw new Error('Unauthorized');
-    }
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || `Request failed (${res.status})`);
-    }
-    return await res.json();
-  } catch (err) {
-    console.error(`API Error [${endpoint}]:`, err.message);
-    throw err;
-  }
+async function loadSets(){try{const data=await (await request('/api/sets')).json();if(!Array.isArray(data))throw Error();remoteSets=data.filter(validSet);offline=false;}catch{offline=true;}if(page==='sets'){renderSetList();connectionStatus();}}
+function createSet(){
+ $('#content').innerHTML=heading('Make it memorable.','Build a set of your own. Good questions make great revision.')+`<form id="create-form"><section class="panel"><div class="form-grid"><div class="field"><label for="set-name">Set title</label><input id="set-name" required maxlength="120" placeholder="e.g. GCSE Physics: energy and forces"></div><div class="field"><label for="set-subject">Subject</label><select id="set-subject">${options()}</select></div></div><div class="section-heading"><h2>Your flashcards</h2><span class="help">Question first. Lightbulb moment second.</span></div><div id="card-inputs"></div><div class="actions"><button class="button" type="button" id="add-card">＋ Add a card</button></div></section><div class="actions"><button class="button primary" type="submit">Save on this device</button><button class="button" type="button" id="publish">Publish to community</button></div><p class="help">Local sets stay in this browser. Publishing makes your set visible to everyone.</p></form>`;
+ addCard();addCard();$('#add-card').onclick=()=>addCard();$('#create-form').onsubmit=e=>{e.preventDefault();saveSet(false);};$('#publish').onclick=()=>{if($('#create-form').reportValidity())saveSet(true);};
 }
-
-// --- App Initialization ---
-async function initApp() {
-  state.localSets = readStorage(STORAGE_KEYS.SETS, []);
-  state.tasks = readStorage(STORAGE_KEYS.TASKS, []);
-  state.sessions = readStorage(STORAGE_KEYS.SESSIONS, 0);
-
-  // Authenticate session and load remote sets before initial render
-  await checkAccountSession();
-  await fetchRemoteSets();
-
-  window.addEventListener('hashchange', handleRoute);
-  handleRoute();
-
-  // Poll chat every 5 seconds
-  setInterval(refreshChat, 5000);
+function addCard(){const row=document.createElement('div');row.className='card-input';row.innerHTML=`<span class="number"></span><div><label>Question<textarea class="front" required maxlength="2000" placeholder="What do you want to remember?"></textarea></label></div><div class="back-field"><label>Answer<textarea class="back" required maxlength="4000" placeholder="The answer, in your own words"></textarea></label></div><button class="icon-button remove-card" type="button" aria-label="Remove card">×</button>`;$('#card-inputs').append(row);row.querySelector('button').onclick=()=>{if($('#card-inputs').children.length===1)return toast('Keep at least one card.');row.remove();numberCards();};numberCards();}
+function numberCards(){document.querySelectorAll('.card-input .number').forEach((n,i)=>n.textContent=String(i+1).padStart(2,'0'));}
+async function saveSet(publish){
+ if(publish && !user) return toast("Sign in before publishing. You can still save this set locally.");
+ const name=$('#set-name').value.trim();const cards=[...document.querySelectorAll('.card-input')].map(r=>({front:r.querySelector('.front').value.trim(),back:r.querySelector('.back').value.trim()}));if(!name||cards.some(c=>!c.front||!c.back))return toast('Give your set a title and complete both sides of every card.');
+ const set={id:'SET_'+crypto.randomUUID(),name,subject:$('#set-subject').value,cards,author:user?.username || 'You',created:Date.now()};
+ if(!save('CR_SETS',[...localSets,set]))return;localSets.push(set);
+ if(publish){const button=$('#publish');button.disabled=true;button.textContent='Publishing…';try{const published=await (await request('/api/sets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(set)})).json();localSets=localSets.map(s=>s.id===set.id?published:s);save('CR_SETS',localSets);toast('Published! A local copy is saved too.');}catch(error){toast('Saved locally. '+error.message);}}
+ else toast('Your study set is saved.');location.hash='sets';
 }
-
-async function checkAccountSession() {
-  try {
-    const user = await request('/api/auth/me');
-    state.user = user;
-  } catch {
-    state.user = null;
-  }
-  renderAccountBar();
+let study;
+function startStudy(set,quiz){clearInterval(chatPoll);page='study';viewVersion++;study={set,cards:[...set.cards],index:0,flipped:false,quiz,checked:false,score:0};document.querySelectorAll('nav a').forEach(a=>a.removeAttribute('aria-current'));$('#page-title').textContent=quiz?'Practice quiz':'Flashcards';renderStudy();}
+function renderStudy(){const s=study;if(s.index>=s.cards.length){$('#content').innerHTML=`<div class="study panel"><p class="eyebrow">A LITTLE MORE CONFIDENT</p><h1>Session complete ✨</h1><p class="subtitle">${s.quiz?`${s.score} of ${s.cards.length} answers matched.`:`You worked through ${s.cards.length} cards. Nice work.`}</p><div class="actions"><button class="button primary" id="again">Try again</button><a class="button" href="#sets" id="library-back">Back to library</a></div></div>`;$('#again').onclick=()=>startStudy(s.set,s.quiz);$('#library-back').onclick=()=>route();return;}
+ const card=s.cards[s.index];$('#content').innerHTML=`<div class="study"><div class="section-heading"><a href="#sets" id="library-back" class="button">← Library</a><button class="button" id="shuffle">Shuffle cards</button></div><p class="eyebrow">${s.quiz?'PRACTISE YOUR RECALL':'ONE CARD AT A TIME'}</p><h1>${esc(s.set.name)}</h1><p class="subtitle">Card ${s.index+1} of ${s.cards.length}</p><progress class="progress" max="${s.cards.length}" value="${s.index}" aria-label="Study progress"></progress><button class="flashcard" id="flip" ${s.quiz?'disabled':''}><small>${s.flipped?'ANSWER':'QUESTION'}</small><strong>${esc(s.flipped?card.back:card.front)}</strong>${!s.quiz?'<small>CLICK OR PRESS SPACE TO FLIP ↻</small>':''}</button>${s.quiz?'<form id="answer-form" class="answer-input"><label for="answer">Your answer</label><input id="answer" required autocomplete="off" placeholder="Try to recall before checking…"><div id="feedback" role="status"></div><div class="actions"><button class="button primary" id="check" type="submit">Check answer</button><button class="button" id="quiz-next" type="button" hidden>Next card →</button></div><p class="help">Answers are checked by text match, ignoring case and punctuation.</p></form>':'<div class="actions"><button class="button" id="previous">← Previous</button><button class="button primary" id="next">Next card →</button></div>'}</div>`;
+ $('#library-back').onclick=()=>route();$('#shuffle').onclick=()=>{for(let i=s.cards.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[s.cards[i],s.cards[j]]=[s.cards[j],s.cards[i]];}s.index=0;s.score=0;s.flipped=false;s.checked=false;renderStudy();};
+ if(!s.quiz){$('#flip').onclick=()=>{s.flipped=!s.flipped;renderStudy();$('#flip')?.focus();};$('#previous').disabled=s.index===0;$('#previous').onclick=()=>{s.index--;s.flipped=false;renderStudy();};$('#next').onclick=()=>{s.index++;s.flipped=false;renderStudy();};}
+ else{$('#answer-form').onsubmit=e=>{e.preventDefault();if(s.checked)return;const norm=v=>v.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const correct=norm($('#answer').value)===norm(card.back);s.checked=true;if(correct)s.score++;$('#feedback').className='result'+(correct?'':' incorrect');$('#feedback').textContent=(correct?'Correct! ':'Keep practising. Expected answer: ')+card.back;$('#check').disabled=true;$('#answer').disabled=true;$('#quiz-next').hidden=false;};$('#quiz-next').onclick=()=>{s.index++;s.checked=false;renderStudy();};}
 }
-
-async function fetchRemoteSets() {
-  try {
-    state.remoteSets = await request('/api/sets');
-  } catch {
-    state.remoteSets = [];
-  }
+function planner(){ $('#content').innerHTML=heading('A plan for your next little win.','Clear your head. Write it down. Take it one thing at a time.')+`<section class="panel"><form id="task-form" class="task-form"><div><label for="task-title">What will you revise?</label><input id="task-title" required maxlength="200" placeholder="e.g. Practise quadratic equations"></div><div><label for="task-date">Due date</label><input type="date" id="task-date" required></div><div><label for="task-subject">Subject</label><select id="task-subject">${options()}</select></div><button class="button primary">＋ Add task</button></form></section><section class="panel"><div class="section-heading"><h2>Your revision plan</h2><span class="help">Saved on this device</span></div><div id="tasks"></div></section>`;$('#task-form').onsubmit=e=>{e.preventDefault();const title=$('#task-title').value.trim();if(!title)return;const next=[...tasks,{id:crypto.randomUUID(),title,date:$('#task-date').value,subject:$('#task-subject').value,done:false}];if(save('CR_TASKS',next)){tasks=next;$('#task-title').value='';renderTasks();}};renderTasks();}
+function renderTasks(){ $('#tasks').innerHTML=tasks.length?tasks.map((t,i)=>`<div class="task-row ${t.done?'done':''}"><input type="checkbox" data-task="${i}" ${t.done?'checked':''} aria-label="Mark ${esc(t.title)} complete"><div><strong>${esc(t.title)}</strong><small>${esc(t.subject)} · ${esc(t.date)}</small></div><button class="icon-button" data-remove-task="${i}" aria-label="Delete ${esc(t.title)}">×</button></div>`).join(''):'<p class="empty">A fresh page. Add one thing you want to learn this week.</p>';document.querySelectorAll('[data-task]').forEach(b=>b.onchange=()=>{const next=tasks.map((t,i)=>i===Number(b.dataset.task)?{...t,done:b.checked}:t);if(save('CR_TASKS',next))tasks=next;renderTasks();});document.querySelectorAll('[data-remove-task]').forEach(b=>b.onclick=()=>{const next=tasks.filter((_,i)=>i!==Number(b.dataset.removeTask));if(save('CR_TASKS',next))tasks=next;renderTasks();});}
+let timer={mode:25,remaining:1500,end:0,running:false};
+function timerPage(){ $('#content').innerHTML=heading('Make a little room for focus.','One task. A clear mind. You’ve got this.')+`<section class="panel timer-panel"><div class="segments"><button class="button" data-minutes="25">Focus · 25 min</button><button class="button" data-minutes="5">Short break</button><button class="button" data-minutes="15">Long break</button></div><div class="timer-face" id="timer-face" role="timer"></div><p class="subtitle" id="timer-label"></p><div class="actions"><button class="button primary" id="timer-toggle"></button><button class="button" id="timer-reset">Reset</button></div><p class="help">Keep this tab open. Your timer continues as you explore your workspace.</p></section>`;document.querySelectorAll('[data-minutes]').forEach(b=>b.onclick=()=>{timer={mode:Number(b.dataset.minutes),remaining:Number(b.dataset.minutes)*60,end:0,running:false};updateTimer();});$('#timer-toggle').onclick=()=>{if(timer.running){timer.remaining=Math.max(0,Math.ceil((timer.end-Date.now())/1000));timer.running=false;}else{if(timer.remaining===0)timer.remaining=timer.mode*60;timer.end=Date.now()+timer.remaining*1000;timer.running=true;}updateTimer();};$('#timer-reset').onclick=()=>{timer.running=false;timer.remaining=timer.mode*60;updateTimer();};updateTimer();}
+function updateTimer(){if(timer.running){timer.remaining=Math.max(0,Math.ceil((timer.end-Date.now())/1000));if(!timer.remaining){timer.running=false;if(timer.mode===25){sessions++;save('CR_SESSIONS',sessions);}toast(timer.mode===25?'Focus session complete. Time for a well-earned break!':'Break complete. Ready for another little win?');}}if($('#timer-face')){$('#timer-face').textContent=`${String(Math.floor(timer.remaining/60)).padStart(2,'0')}:${String(timer.remaining%60).padStart(2,'0')}`;$('#timer-toggle').textContent=timer.running?'Pause session':timer.remaining===timer.mode*60?'Start session':'Resume session';$('#timer-label').textContent=timer.mode===25?'A little focus goes a long way.':'Rest is part of learning, too.';document.querySelectorAll('[data-minutes]').forEach(b=>b.classList.toggle('active',Number(b.dataset.minutes)===timer.mode));}}
+setInterval(updateTimer,250);
+function chat(){ $('#content').innerHTML=heading('Better, together.','Share a question, a helpful tip, or a little encouragement.')+`<section class="panel"><h2>Community chat</h2><p class="help">You’re chatting as ${esc(user?.username || "Guest")}. Messages are public.</p><p id="chat-status" class="help" role="status"></p><div class="chat-box" id="chat-box" aria-label="Community messages"></div><form class="chat-form" id="chat-form"><label class="sr-only" for="chat-input">Your message</label><input id="chat-input" maxlength="2000" placeholder="What are you working on?" required><button class="button primary" id="send">Send →</button></form></section>`; const version=viewVersion;refreshChat(version);chatPoll=setInterval(()=>refreshChat(version),5000);$('#chat-form').onsubmit=async e=>{e.preventDefault();if(!user)return toast('Sign in to send a message.');const input=$('#chat-input'),button=$('#send'),text=input.value.trim();if(!text)return;button.disabled=true;try{await request('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});if(input.value.trim()===text)input.value='';if(page==='chat'&&version===viewVersion)refreshChat(version);}catch(error){toast(error.message);}finally{button.disabled=false;}};}
+let chatLoading=false;
+async function refreshChat(version){if(chatLoading)return;chatLoading=true;try{const msgs=await (await request('/api/chat')).json();if(!Array.isArray(msgs))throw Error();if(page!=='chat'||version!==viewVersion)return;const box=$('#chat-box'),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<60;box.innerHTML=msgs.map(m=>`<article class="chat-msg"><header><strong>${esc(m.author)}</strong><time>${esc(new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</time></header><p>${esc(m.text)}</p></article>`).join('')||'<p class="empty">Start the conversation. What are you learning today?</p>';if(atBottom)box.scrollTop=box.scrollHeight;$('#chat-status').textContent='Updates every few seconds.';}catch{if(page==='chat'&&version===viewVersion)$('#chat-status').textContent='Chat is unavailable. We’ll retry shortly; your draft stays here.';}finally{chatLoading=false;}}
+let game, gameTimer;
+let best = read('CR_BEST',{}); if (!best || typeof best !== 'object') best = {};
+const shuffle = a => { for (let i=a.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; };
+const bestKey = (kind,set) => kind+':'+set.id;
+function arcade(){
+ const sets=allSets().filter(s=>s.cards.length>=2);
+ if(!sets.some(s=>s.id===arcade.setId)) arcade.setId=sets[0]?.id;
+ $('#content').innerHTML=heading('Play your way to remembering.','Turn any study set into a game. Pick a set, then pick a game.')+`<section class="panel"><div class="field"><label for="game-set">Study set</label><select id="game-set">${sets.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} (${s.cards.length} cards)</option>`).join('')}</select></div><div class="quick-tools"><button class="tool-link game-pick" id="play-memory" type="button"><span class="stat-icon">▣</span><div><strong>Memory match</strong><p>Flip tiles and pair each question with its answer.</p><small id="best-memory"></small></div><span>↗</span></button><button class="tool-link game-pick" id="play-quick" type="button"><span class="stat-icon orange">ϟ</span><div><strong>Quick-fire</strong><p>60 seconds. Pick the right answer, as many times as you can.</p><small id="best-quick"></small></div><span>↗</span></button></div></section>`;
+ const selected=()=>sets.find(s=>s.id===$('#game-set').value);
+ const showBest=()=>{const s=selected(),m=best[bestKey('memory',s)],q=best[bestKey('quick',s)];$('#best-memory').textContent=m?`Best: ${m} moves`:'No best yet';$('#best-quick').textContent=q?`Best: ${q} correct`:'No best yet';};
+ $('#game-set').value=arcade.setId;$('#game-set').onchange=e=>{arcade.setId=e.target.value;showBest();};showBest();
+ $('#play-memory').onclick=()=>startMemory(selected());$('#play-quick').onclick=()=>startQuick(selected());
 }
-
-function getAllSets() {
-  const builtInSamples = [
-    {
-      id: 'sample-1',
-      title: 'Biology 101: Cell Structure',
-      subject: 'Biology',
-      cards: [
-        { term: 'Mitochondria', definition: 'Powerhouse of the cell, produces ATP.' },
-        { term: 'Ribosome', definition: 'Synthesizes proteins from amino acids.' }
-      ]
-    }
-  ];
-  return [...builtInSamples, ...state.localSets, ...state.remoteSets];
+function saveBest(kind,set,value,lowerIsBetter){const key=bestKey(kind,set),old=best[key];const beat=!old||(lowerIsBetter?value<old:value>old);if(beat){best={...best,[key]:value};save('CR_BEST',best);}return beat;}
+function gameShell(title,sub,body){return `<div class="study"><div class="section-heading"><button class="button" id="game-back">← Arcade</button><span class="help" id="game-stats"></span></div><p class="eyebrow">${title}</p><h1>${esc(game.set.name)}</h1><p class="subtitle">${sub}</p>${body}</div>`;}
+function gameOver(kind,headline,detail,isBest){clearInterval(gameTimer);$('#content').innerHTML=`<div class="study panel"><p class="eyebrow">${isBest?'NEW PERSONAL BEST ✳':'NICE ONE'}</p><h1>${headline}</h1><p class="subtitle">${detail}</p><div class="actions"><button class="button primary" id="again">Play again</button><button class="button" id="game-back">Back to arcade</button></div></div>`;$('#again').onclick=()=>(kind==='memory'?startMemory:startQuick)(game.set);$('#game-back').onclick=arcade;}
+function startMemory(set){
+ clearInterval(gameTimer);
+ const pairs=shuffle([...set.cards]).slice(0,6);
+ game={kind:'memory',set,tiles:shuffle(pairs.flatMap((c,i)=>[{pair:i,side:'Q',text:c.front},{pair:i,side:'A',text:c.back}])),open:[],matched:0,moves:0,start:Date.now(),lock:false};
+ $('#content').innerHTML=gameShell('MEMORY MATCH','Find each question and its answer.',`<div class="memory-grid" id="memory-grid">${game.tiles.map((t,i)=>`<button class="mem-tile" data-tile="${i}" aria-label="Hidden tile ${i+1}"><span>?</span></button>`).join('')}</div>`);
+ $('#game-back').onclick=arcade;
+ const stats=()=>{$('#game-stats').textContent=`${game.moves} moves · ${game.matched}/${pairs.length} pairs · ${Math.floor((Date.now()-game.start)/1000)}s`;};stats();gameTimer=setInterval(stats,1000);
+ document.querySelectorAll('[data-tile]').forEach(b=>b.onclick=()=>{
+  const i=Number(b.dataset.tile),t=game.tiles[i];if(game.lock||t.done||game.open.includes(i))return;
+  b.classList.add('flipped');b.innerHTML=`<small>${t.side==='Q'?'QUESTION':'ANSWER'}</small><span>${esc(t.text)}</span>`;b.setAttribute('aria-label',`${t.side==='Q'?'Question':'Answer'}: ${t.text}`);game.open.push(i);
+  if(game.open.length<2)return;
+  game.moves++;const [a,c]=game.open.map(n=>game.tiles[n]);
+  if(a.pair===c.pair){game.open.forEach(n=>{game.tiles[n].done=true;document.querySelector(`[data-tile="${n}"]`).classList.add('matched');});game.open=[];game.matched++;stats();
+   if(game.matched===pairs.length){const secs=Math.round((Date.now()-game.start)/1000),isBest=saveBest('memory',set,game.moves,true);setTimeout(()=>gameOver('memory','All matched! ✨',`${game.moves} moves in ${secs} second${secs===1?'':'s'}. Best: ${best[bestKey('memory',set)]} moves.`,isBest),500);}
+  }else{game.lock=true;stats();setTimeout(()=>{game.open.forEach(n=>{const el=document.querySelector(`[data-tile="${n}"]`);if(el){el.classList.remove('flipped');el.innerHTML='<span>?</span>';el.setAttribute('aria-label',`Hidden tile ${n+1}`);}});game.open=[];game.lock=false;},900);}
+ });
 }
-
-// --- Authentication Handlers ---
-async function handleAuthSubmit(event, endpoint) {
-  event.preventDefault();
-  const formData = new FormData(event.target);
-  const data = Object.fromEntries(formData.entries());
-
-  try {
-    const user = await request(endpoint, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
-    state.user = user;
-    renderAccountBar();
-    handleRoute();
-    toast('Success!');
-  } catch (err) {
-    toast(err.message || 'Authentication failed.');
-  }
-}
-
-async function signOut() {
-  try {
-    await request('/api/auth/logout', { method: 'POST' });
-  } catch (err) {
-    console.error('Logout error:', err);
-  }
-  state.user = null;
-  renderAccountBar();
-  handleRoute();
-  toast('Signed out.');
-}
-
-// --- Chat Handlers ---
-async function sendChatMessage(event) {
-  event.preventDefault();
-  const input = document.getElementById('chat-input');
-  if (!input) return;
-
-  const text = input.value.trim();
-  if (!text) return;
-
-  try {
-    await request('/api/chat', {
-      method: 'POST',
-      body: JSON.stringify({ text })
-    });
-    input.value = '';
-    await refreshChat();
-  } catch (err) {
-    toast('Failed to send message.');
-  }
-}
-
-async function refreshChat() {
-  const chatBox = document.getElementById('chat-box');
-  if (!chatBox) return;
-
-  try {
-    const messages = await request('/api/chat');
-    state.chatMessages = messages;
-    chatBox.innerHTML = messages.map(msg => `
-      <div class="chat-msg">
-        <strong>${esc(msg.username)}:</strong> ${esc(msg.text)}
-      </div>
-    `).join('');
-    chatBox.scrollTop = chatBox.scrollHeight;
-  } catch {
-    // Silent failure for polling loop
-  }
-}
-
-// --- Router ---
-function handleRoute() {
-  const routePath = window.location.hash.replace('#', '') || 'library';
-  const mainContent = document.getElementById('app-main');
-  if (!mainContent) return;
-
-  switch (routePath) {
-    case 'library':
-      renderLibrary(mainContent);
-      break;
-    case 'planner':
-      renderPlanner(mainContent);
-      break;
-    case 'timer':
-      renderTimer(mainContent);
-      break;
-    case 'chat':
-      renderChat(mainContent);
-      break;
-    case 'account':
-      renderAccountPage(mainContent);
-      break;
-    default:
-      renderLibrary(mainContent);
-  }
-}
-
-function renderAccountBar() {
-  const accountNav = document.getElementById('account-nav-item');
-  if (!accountNav) return;
-
-  if (state.user) {
-    accountNav.innerHTML = `<a href="#account">Logged in as <strong>${esc(state.user.username)}</strong></a>`;
-  } else {
-    accountNav.innerHTML = `<a href="#account">Sign In / Register</a>`;
-  }
-}
-
-// --- Views ---
-function renderLibrary(container) {
-  const sets = getAllSets();
-  container.innerHTML = `
-    <section class="library-section">
-      <h2>Study Library</h2>
-      <div id="set-grid" class="set-grid">
-        ${sets.map(set => `
-          <div class="set-card">
-            <h3>${esc(set.title)}</h3>
-            <p>Subject: ${esc(set.subject || 'General')}</p>
-            <p>${set.cards ? set.cards.length : 0} cards</p>
-          </div>
-        `).join('')}
-      </div>
-    </section>
-  `;
-}
-
-function renderPlanner(container) {
-  container.innerHTML = `
-    <section class="planner-section">
-      <h2>Revision Planner</h2>
-      <ul>
-        ${state.tasks.map(task => `<li>${esc(task.text)}</li>`).join('')}
-      </ul>
-    </section>
-  `;
-}
-
-function renderTimer(container) {
-  container.innerHTML = `
-    <section class="timer-section">
-      <h2>Focus Timer</h2>
-      <div class="timer-display">25:00</div>
-      <p>Completed Sessions: ${state.sessions}</p>
-    </section>
-  `;
-}
-
-function renderChat(container) {
-  container.innerHTML = `
-    <section class="chat-section">
-      <h2>Community Chat</h2>
-      <div id="chat-box" class="chat-box"></div>
-      ${state.user 
-        ? `<form id="chat-form">
-             <input type="text" id="chat-input" placeholder="Say something..." required>
-             <button type="submit">Send</button>
-           </form>`
-        : '<p>Please <a href="#account">sign in</a> to chat.</p>'
-      }
-    </section>
-  `;
-
-  const chatForm = document.getElementById('chat-form');
-  if (chatForm) {
-    chatForm.addEventListener('submit', sendChatMessage);
-  }
-
-  refreshChat();
-}
-
-function renderAccountPage(container) {
-  if (state.user) {
-    container.innerHTML = `
-      <section class="account-section">
-        <h2>Account Profile</h2>
-        <p>Signed in as <strong>${esc(state.user.username)}</strong></p>
-        <button id="signout-btn">Sign Out</button>
-      </section>
-    `;
-    document.getElementById('signout-btn').addEventListener('click', signOut);
-    return;
-  }
-
-  container.innerHTML = `
-    <section class="account-section">
-      <h2>Sign In</h2>
-      <form id="login-form">
-        <input type="text" name="username" placeholder="Username" required>
-        <input type="password" name="password" placeholder="Password" required>
-        <button type="submit">Sign In</button>
-      </form>
-    </section>
-  `;
-
-  document.getElementById('login-form').addEventListener('submit', (e) => {
-    handleAuthSubmit(e, '/api/auth/login');
+function startQuick(set){
+ clearInterval(gameTimer);
+ const answers=[...new Set([...set.cards,...allSets().flatMap(s=>s.cards)].map(c=>c.back))];
+ game={kind:'quick',set,deck:[],score:0,asked:0,streak:0,end:Date.now()+60000,lock:false};
+ $('#content').innerHTML=gameShell('QUICK-FIRE','Tap the right answer, or press 1–4.',`<progress class="progress" id="quick-time" max="60" value="60" aria-label="Time left"></progress><div class="flashcard quick-question" id="quick-q"></div><div class="quick-options" id="quick-options"></div>`);
+ $('#game-back').onclick=arcade;
+ const finish=()=>{const isBest=saveBest('quick',set,game.score,false);gameOver('quick',`${game.score} correct`,`You answered ${game.asked} questions. Best: ${best[bestKey('quick',set)]} correct.`,isBest);};
+ const tick=()=>{const left=Math.max(0,(game.end-Date.now())/1000);if(!$('#quick-time'))return clearInterval(gameTimer);$('#quick-time').value=left;$('#game-stats').textContent=`${Math.ceil(left)}s · ${game.score} correct · streak ${game.streak}`;if(!left&&!game.lock)finish();};
+ const next=()=>{
+  if(!game.deck.length)game.deck=shuffle([...set.cards]);
+  const card=game.deck.pop();game.card=card;game.lock=false;
+  const options=shuffle([card.back,...shuffle(answers.filter(a=>a!==card.back)).slice(0,3)]);
+  $('#quick-q').innerHTML=`<small>QUESTION</small><strong>${esc(card.front)}</strong>`;
+  $('#quick-options').innerHTML=options.map((o,i)=>`<button class="button quick-option" data-option="${i}"><b>${i+1}</b><span>${esc(o)}</span></button>`).join('');
+  document.querySelectorAll('[data-option]').forEach(b=>b.onclick=()=>{
+   if(game.lock)return;game.lock=true;game.asked++;const right=options[b.dataset.option]===card.back;
+   if(right){game.score++;game.streak++;}else game.streak=0;
+   document.querySelectorAll('[data-option]').forEach(o=>{if(options[o.dataset.option]===card.back)o.classList.add('correct');});if(!right)b.classList.add('wrong');
+   tick();setTimeout(()=>{if(game.kind!=='quick'||game.card!==card)return;if(Date.now()>=game.end)finish();else next();},right?350:1100);
   });
+ };
+ next();tick();gameTimer=setInterval(tick,200);
 }
-
-// Boot application when DOM is ready
-document.addEventListener('DOMContentLoaded', initApp);
+document.addEventListener('keydown',e=>{if(page!=='games'||game?.kind!=='quick'||e.target.closest?.('input,select,textarea'))return;const b=document.querySelector(`[data-option="${Number(e.key)-1}"]`);if(b){e.preventDefault();b.click();}});
+function route(){clearInterval(chatPoll);clearInterval(gameTimer);game=null;viewVersion++;const route=location.hash.slice(1)||'sets';page=['sets','create','games','planner','timer','chat','account'].includes(route)?route:'sets';const titles={sets:'Study library',create:'Create a set',games:'Arcade',planner:'Revision planner',timer:'Focus timer',chat:'Community chat',account:'Account'};$('#page-title').textContent=titles[page];document.querySelectorAll('nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===page);if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});({sets:renderLibrary,create:createSet,games:arcade,planner,timer:timerPage,chat,account:accountPage})[page]();}
+window.addEventListener('hashchange',route);route();loadSets();loadAccount();

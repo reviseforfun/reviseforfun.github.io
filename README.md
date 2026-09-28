@@ -25,7 +25,13 @@ npm run db:migrate  # Apply local D1 migrations
 
 Build output is `dist/public` and `dist/worker`. Only index.html, styles.css and app.js are copied to public assets. CI installs dependencies, checks syntax, builds, and tests every push and pull request.
 
-## Deploy to Cloudflare
+## Deploy from the browser (Chromebook friendly)
+
+Cloudflare Workers Builds deploys automatically on every push to `main`; wrangler builds `dist/public` itself. Builds do not run D1 migrations: after adding a file to `migrations/`, paste its SQL into Cloudflare dashboard → D1 → `cyberrevision` → Console.
+
+The live site is the Worker URL, not github.io: GitHub Pages can only serve static files, so sign-in, publishing and chat only work on the Worker.
+
+## Deploy to Cloudflare from a terminal
 
 This has not been deployed. Use a **new** D1 database; the earlier API schema and account ownership are unknown. Existing browser-only guest identities are not migrated to trusted accounts.
 
