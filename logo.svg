@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="CyberRevision">
+  <defs>
+    <linearGradient id="crg" x1="4" y1="2" x2="60" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8b6cff"/>
+      <stop offset=".5" stop-color="#5a48f0"/>
+      <stop offset="1" stop-color="#14b4dc"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#crg)"/>
+  <rect x="11" y="16" width="30" height="36" rx="6" fill="#fff" opacity=".3" transform="rotate(-9 26 34)"/>
+  <g transform="rotate(7 34 33)">
+    <rect x="19" y="14" width="30" height="37" rx="6" fill="#fff"/>
+    <path d="M40.5 25H33a5 5 0 0 0-5 5v7a5 5 0 0 0 5 5h7.5" fill="none" stroke="#5a48f0" stroke-width="3.4" stroke-linecap="round"/>
+    <circle cx="40.5" cy="25" r="3" fill="#5a48f0"/>
+    <circle cx="40.5" cy="42" r="3.6" fill="#14b4dc"/>
+  </g>
+  <path d="M52 5.5l1.7 4 4 1.7-4 1.7-1.7 4-1.7-4-4-1.7 4-1.7z" fill="#fff"/>
+</svg>
