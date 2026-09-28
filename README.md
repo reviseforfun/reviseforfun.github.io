@@ -27,12 +27,7 @@ Build output is `dist/public` and `dist/worker`. Only index.html, styles.css and
 
 ## Deploy from the browser (Chromebook friendly)
 
-Pushing to `main` runs `.github/workflows/deploy.yml`: it tests the code, applies D1 migrations to the live database and deploys the Worker. You never need a terminal. One-time setup:
-
-1. In the Cloudflare dashboard, go to **My Profile → API Tokens → Create Token**, use the **Edit Cloudflare Workers** template and add **Account → D1 → Edit**. Copy the token.
-2. Copy your **Account ID** from the Workers & Pages overview page.
-3. In GitHub, go to **Settings → Secrets and variables → Actions** and add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-4. Open the **Actions** tab, pick **Deploy to Cloudflare**, and press **Run workflow**.
+Cloudflare Workers Builds deploys automatically on every push to `main`; wrangler builds `dist/public` itself. Builds do not run D1 migrations: after adding a file to `migrations/`, paste its SQL into Cloudflare dashboard → D1 → `cyberrevision` → Console.
 
 The live site is the Worker URL, not github.io: GitHub Pages can only serve static files, so sign-in, publishing and chat only work on the Worker.
 
